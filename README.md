@@ -2,7 +2,7 @@
 
 A beautiful, real-time bourbon tasting journal powered by Firebase.
 
-Live site: https://yourusername.github.io/bourbon-vault
+Live site: https://davidjroland80.github.io/TheBourbonVault
 
 Every pour, every note — saved forever in the cloud.
 
