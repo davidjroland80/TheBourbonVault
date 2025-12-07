@@ -85,14 +85,8 @@ Replace the firebaseConfig placeholder with your project's config to run.
             <label for="date">Tasting date</label>
             <input id="date" type="date" />
 
-            <label for="rating">Rating (1-5)</label>
-            <select id="rating">
-              <option value="5">★★★★★ (5)</option>
-              <option value="4">★★★★☆ (4)</option>
-              <option value="3">★★★☆☆ (3)</option>
-              <option value="2">★★☆☆☆ (2)</option>
-              <option value="1">★☆☆☆☆ (1)</option>
-            </select>
+            <label for="rating">Rating (1–10, allow decimals)</label>
+<input id="rating" type="number" min="1" max="10" step="0.1" placeholder="e.g. 8.5" />
 
             <label for="notes">Tasting notes</label>
             <textarea id="notes" placeholder="Nose:... Palate:... Finish:..."></textarea>
@@ -117,8 +111,8 @@ Replace the firebaseConfig placeholder with your project's config to run.
               <select id="sort">
                 <option value="dateDesc">Newest first</option>
                 <option value="dateAsc">Oldest first</option>
-                <option value="ratingDesc">Top rating</option>
-                <option value="ratingAsc">Lowest rating</option>
+                <option value="ratingDesc">Highest Score</option>
+                <option value="ratingAsc">Lowest Score</option>
               </select>
             </div>
             <div class="pill">Total: <span id="count">0</span></div>
@@ -132,7 +126,11 @@ Replace the firebaseConfig placeholder with your project's config to run.
         <footer>
           Deployed via GitHub Pages — replace firebaseConfig, enable Firestore, and optionally secure rules for production.
         </footer>
-      </main>
+      <section class="card" style="margin-top:20px">
+  <h2 style="margin-top:0">Ratings Overview</h2>
+  <canvas id="ratingChart" height="120"></canvas>
+</section>
+</main>
     </div>
   </div>
 
@@ -230,7 +228,7 @@ Replace the firebaseConfig placeholder with your project's config to run.
         const title = document.createElement('div'); title.style.fontWeight='700'; title.textContent = (r.bottle ? r.bottle + ' — ' : '') + (r.distillery || 'Unknown');
         const meta = document.createElement('div'); meta.className='meta';
         const dateStr = r.date ? new Date(r.date).toLocaleDateString() : (r.createdAt ? new Date(r.createdAt.seconds*1000).toLocaleDateString() : '—');
-        meta.textContent = `${dateStr} · ${r.proof ? r.proof + ' proof' : 'proof N/A'} · ${r.rating||0}★`;
+        meta.textContent = `Score: ${r.rating||0}/10 · ${dateStr} · ${r.proof ? r.proof + ' proof' : 'proof N/A'}`;
 
         const notes = document.createElement('div'); notes.style.marginTop='6px'; notes.textContent = r.notes || '';
 
@@ -246,7 +244,9 @@ Replace the firebaseConfig placeholder with your project's config to run.
 
         actions.appendChild(editBtn); actions.appendChild(delBtn);
 
-        body.appendChild(title); body.appendChild(meta); body.appendChild(notes);
+        const bar = document.createElement('div'); bar.style.height='6px'; bar.style.borderRadius='4px'; bar.style.background='rgba(255,255,255,0.08)'; bar.style.marginTop='4px';
+        const fill = document.createElement('div'); fill.style.height='100%'; fill.style.width=`${(r.rating||0)*10}%`; fill.style.borderRadius='4px'; fill.style.background='var(--accent)'; bar.appendChild(fill);
+        body.appendChild(title); body.appendChild(meta); body.appendChild(bar); body.appendChild(notes);
         item.appendChild(body); item.appendChild(actions);
         listEl.appendChild(item);
       }
@@ -302,6 +302,59 @@ Replace the firebaseConfig placeholder with your project's config to run.
 
     // Clean up when unloading (optional)
     window.addEventListener('beforeunload', ()=>{ if(typeof unsub === 'function') unsub(); });
-  </script>
+    // --- Image Upload Support ---
+  import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/9.6.11/firebase-storage.js";
+
+  const storage = getStorage(app);
+
+  // Add image input to the form
+  const form = document.getElementById('review-form');
+  if (!document.getElementById('image-input')) {
+    const imgInput = document.createElement('input');
+    imgInput.type = 'file';
+    imgInput.accept = 'image/*';
+    imgInput.id = 'image-input';
+    imgInput.className = 'mt-2';
+    form.appendChild(imgInput);
+  }
+
+  // Modify submit handler to upload an image
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+
+    const file = document.getElementById('image-input').files[0];
+    let imageUrl = null;
+
+    if (file) {
+      const filePath = `bourbon_images/${Date.now()}_${file.name}`;
+      const imgRef = storageRef(storage, filePath);
+      const snapshot = await uploadBytes(imgRef, file);
+      imageUrl = await getDownloadURL(snapshot.ref);
+    }
+
+    // Attach imageUrl to the review object
+    review.imageUrl = imageUrl;
+  });
+// --- Charts (Chart.js) ---
+import "https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js";
+
+function renderChart(){
+  const ctx = document.getElementById('ratingChart');
+  if(!ctx) return;
+  const bins = Array(10).fill(0);
+  for(const r of reviews){ if(r.rating>=1 && r.rating<=10) bins[r.rating-1]++; }
+  if(window.ratingChart) window.ratingChart.destroy();
+  window.ratingChart = new Chart(ctx,{
+    type:'bar',
+    data:{ labels:[1,2,3,4,5,6,7,8,9,10], datasets:[{ label:'Count', data:bins }] },
+    options:{ responsive:true, plugins:{legend:{display:false}}, scales:{y:{beginAtZero:true}} }
+  });
+}
+
+// Re-render chart whenever list updates
+const originalRenderList = renderList;
+renderList = function(){ originalRenderList(); renderChart(); };
+
+</script>
 </body>
 </html>
