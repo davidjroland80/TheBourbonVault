@@ -1,30 +1,3 @@
-<!--
-Bourbon Tasting Tracker - single-file HTML (replace firebaseConfig with your project's values)
-
-Setup steps (short):
-1) Create a Firebase project at https://console.firebase.google.com
-2) Enable Firestore (in test mode or configure rules) and optional Storage if you want images
-3) From Project Settings -> SDK setup, copy the firebaseConfig object and paste below
-4) Make sure Firestore rules allow reads/writes for your auth (this example uses anonymous auth by default)
-   Example rule for development (NOT for production):
-     service cloud.firestore {
-       match /databases/{database}/documents {
-         match /{document=**} { allow read, write: if true; }
-       }
-     }
-5) Save this file to a GitHub repo and enable GitHub Pages on the repo (branch: main / folder: /) to host.
-   Or use GitHub Actions to auto-deploy. No server code required.
-
-What this page does:
-- Uses Firebase (v9 modular) + Firestore to store tasting reviews
-- Allows adding, editing, deleting reviews
-- Live-syncs reviews (onSnapshot)
-- Supports star rating, proof, distillery, date, tasting notes
-- Uses anonymous auth so each browser gets its own user id (optional)
-
-Replace the firebaseConfig placeholder with your project's config to run.
--->
-
 <!doctype html>
 <html lang="en">
 <head>
@@ -56,6 +29,9 @@ Replace the firebaseConfig placeholder with your project's config to run.
     .pill{background:rgba(255,255,255,0.03);padding:6px 8px;border-radius:999px;font-size:12px;color:var(--muted)}
     footer{margin-top:18px;color:var(--muted);font-size:13px}
     .empty{padding:26px;text-align:center;color:var(--muted);border-radius:10px;border:1px dashed rgba(255,255,255,0.04)}
+    .thumb{width:96px;height:72px;border-radius:8px;object-fit:cover;border:1px solid rgba(255,255,255,0.04);}
+    .form-row{display:flex;gap:8px}
+    .muted-note{font-size:12px;color:var(--muted);margin-top:6px}
   </style>
 </head>
 <body>
@@ -64,7 +40,7 @@ Replace the firebaseConfig placeholder with your project's config to run.
       <img src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='44' height='44'><rect rx='8' ry='8' width='44' height='44' fill='%23D97706'/><text x='50%' y='58%' font-size='22' text-anchor='middle' fill='white' font-family='Arial' font-weight='700'>B</text></svg>" alt="logo" style="width:44px;height:44px;border-radius:8px;"/>
       <div>
         <h1>Bourbon Tasting Tracker</h1>
-        <div class="small">Save tasting notes, proofs, ratings — live with Firebase</div>
+        <div class="small">Save tasting notes, proofs, ratings — live with Firebase (Storage + Firestore)</div>
       </div>
     </header>
 
@@ -86,11 +62,14 @@ Replace the firebaseConfig placeholder with your project's config to run.
             <input id="date" type="date" />
 
             <label for="rating">Rating (1–10, allow decimals)</label>
-<input id="rating" type="number" min="1" max="10" step="0.1" placeholder="e.g. 8.5" />
+            <input id="rating" type="number" min="1" max="10" step="0.1" placeholder="e.g. 8.5" />
 
             <label for="notes">Tasting notes</label>
             <textarea id="notes" placeholder="Nose:... Palate:... Finish:..."></textarea>
 
+            <label for="imageInput">Bottle photo (optional)</label>
+            <input id="imageInput" type="file" accept="image/*" />
+            <div class="muted-note">Tip: images are uploaded to your Firebase Storage. Keep file sizes reasonable.</div>
             <div style="display:flex;gap:8px;margin-top:12px">
               <button type="submit" class="btn">Save review</button>
               <button type="button" id="clearBtn" class="btn ghost">Clear</button>
@@ -124,7 +103,7 @@ Replace the firebaseConfig placeholder with your project's config to run.
         </div>
 
         <footer>
-          Deployed via GitHub Pages — replace firebaseConfig, enable Firestore, and optionally secure rules for production.
+          Deployed via GitHub Pages — replace firebaseConfig, enable Firestore & Storage, and secure rules for production.
         </footer>
       <section class="card" style="margin-top:20px">
   <h2 style="margin-top:0">Ratings Overview</h2>
@@ -136,7 +115,13 @@ Replace the firebaseConfig placeholder with your project's config to run.
 
   <!-- Firebase v9 modular CDN -->
   <script type="module">
-    // ---------- 1) Paste your firebaseConfig here ----------
+    // ---------- Firebase Imports ----------
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.2/firebase-app.js";
+    import { getFirestore, collection, addDoc, getDocs, onSnapshot, updateDoc, deleteDoc, doc, serverTimestamp } from "https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore.js";
+    import { getStorage, ref, uploadBytes, getDownloadURL, deleteObject } from "https://www.gstatic.com/firebasejs/9.22.2/firebase-storage.js";
+    import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/9.22.2/firebase-auth.js";
+
+    // ---------- Firebase Config ----------
     const firebaseConfig = {
       apiKey: "AIzaSyAWhivu2HR_6epguOnwxvu7Nfsu1OYKESA",
       authDomain: "bourbon-vault.firebaseapp.com",
@@ -146,215 +131,155 @@ Replace the firebaseConfig placeholder with your project's config to run.
       messagingSenderId: "1013190214804",
       appId: "1:1013190214804:web:594665cae3a79a3451a081"
     };
-    // -------------------------------------------------------
 
-    // Firebase imports (CDN)
-    import { initializeApp } from 'https://www.gstatic.com/firebasejs/9.22.2/firebase-app.js';
-    import { getFirestore, collection, addDoc, onSnapshot, doc, deleteDoc, updateDoc, query, orderBy, serverTimestamp, getDocs } from 'https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore.js';
-    import { getAuth, signInAnonymously, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/9.22.2/firebase-auth.js';
-
-    // Initialize
     const app = initializeApp(firebaseConfig);
     const db = getFirestore(app);
+    const storage = getStorage(app);
     const auth = getAuth(app);
+    const provider = new GoogleAuthProvider();
 
-    // UI refs
+    // ---------- Auth UI ----------
+    const signInBtn = document.getElementById("signInBtn");
+    const signOutBtn = document.getElementById("signOutBtn");
+    const userDisplay = document.getElementById("userDisplay");
+
+    signInBtn.onclick = () => signInWithPopup(auth, provider);
+    signOutBtn.onclick = () => signOut(auth);
+
+    onAuthStateChanged(auth, (user) => {
+      if (user) {
+        signInBtn.style.display = "none";
+        signOutBtn.style.display = "inline-block";
+        userDisplay.textContent = `Signed in as ${user.displayName}`;
+      } else {
+        signInBtn.style.display = "inline-block";
+        signOutBtn.style.display = "none";
+        userDisplay.textContent = "";
+      }
+    });
+
+    // ---------- Firestore Collection ----------
+    const reviewsCol = collection(db, "reviews");
+
+    // ---------- DOM Elements ----------
     const reviewForm = document.getElementById('reviewForm');
-    const distilleryInput = document.getElementById('distillery');
-    const bottleInput = document.getElementById('bottle');
-    const proofInput = document.getElementById('proof');
-    const dateInput = document.getElementById('date');
-    const ratingInput = document.getElementById('rating');
-    const notesInput = document.getElementById('notes');
-    const listEl = document.getElementById('list');
-    const statusEl = document.getElementById('status');
-    const uidEl = document.getElementById('uid');
-    const countEl = document.getElementById('count');
-    const reviewIdInput = document.getElementById('reviewId');
-    const searchInput = document.getElementById('search');
-    const sortSelect = document.getElementById('sort');
-    const clearBtn = document.getElementById('clearBtn');
+    const reviewsList = document.getElementById('reviewsList');
 
-    // Anonymous auth so users get a stable uid per browser session/device
-    signInAnonymously(auth).catch((err)=>console.error('Auth error',err));
-    onAuthStateChanged(auth, user=>{
-      if(user){ uidEl.textContent = user.uid; }
-    });
+    // ---------- Submit Review (Login Required) ----------
+    reviewForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
 
-    // Collection reference
-    const reviewsCol = collection(db, 'reviews');
-
-    // Keep an in-memory map of reviews for filtering/sorting
-    let reviews = [];
-
-    // Listen for real-time updates (ordered by timestamp desc)
-    const q = query(reviewsCol, orderBy('createdAt','desc'));
-    const unsub = onSnapshot(q, snapshot=>{
-      statusEl.textContent = 'Synced';
-      reviews = snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() }));
-      renderList();
-    }, err=>{
-      console.error(err);
-      statusEl.textContent = 'Error';
-    });
-
-    // Render list with filtering and sorting
-    function renderList(){
-      const qText = searchInput.value.trim().toLowerCase();
-      let filtered = reviews.filter(r=>{
-        if(!qText) return true;
-        return (r.distillery||'').toLowerCase().includes(qText) || (r.bottle||'').toLowerCase().includes(qText) || (r.notes||'').toLowerCase().includes(qText);
-      });
-
-      const sort = sortSelect.value;
-      if(sort==='dateDesc') filtered.sort((a,b)=> (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0));
-      if(sort==='dateAsc') filtered.sort((a,b)=> (a.createdAt?.seconds||0) - (b.createdAt?.seconds||0));
-      if(sort==='ratingDesc') filtered.sort((a,b)=> (b.rating||0) - (a.rating||0));
-      if(sort==='ratingAsc') filtered.sort((a,b)=> (a.rating||0) - (b.rating||0));
-
-      countEl.textContent = filtered.length;
-
-      if(filtered.length===0){
-        listEl.innerHTML = '<div class="empty">No reviews match your filter.</div>';
+      const user = auth.currentUser;
+      if (!user) {
+        alert('You must be logged in to submit a review.');
         return;
       }
 
-      listEl.innerHTML = '';
-      for(const r of filtered){
-        const item = document.createElement('div'); item.className='item';
-        const left = document.createElement('div'); left.style.flex='0 0 10px';
-        const body = document.createElement('div'); body.style.flex='1';
+      const formData = new FormData(reviewForm);
+      const imageFile = formData.get('photo');
+      let imageUrl = null;
+      let imagePath = null;
 
-        const title = document.createElement('div'); title.style.fontWeight='700'; title.textContent = (r.bottle ? r.bottle + ' — ' : '') + (r.distillery || 'Unknown');
-        const meta = document.createElement('div'); meta.className='meta';
-        const dateStr = r.date ? new Date(r.date).toLocaleDateString() : (r.createdAt ? new Date(r.createdAt.seconds*1000).toLocaleDateString() : '—');
-        meta.textContent = `Score: ${r.rating||0}/10 · ${dateStr} · ${r.proof ? r.proof + ' proof' : 'proof N/A'}`;
-
-        const notes = document.createElement('div'); notes.style.marginTop='6px'; notes.textContent = r.notes || '';
-
-        const actions = document.createElement('div'); actions.className='actions';
-        const editBtn = document.createElement('button'); editBtn.className='btn ghost'; editBtn.textContent='Edit';
-        const delBtn = document.createElement('button'); delBtn.className='btn ghost'; delBtn.textContent='Delete';
-
-        editBtn.onclick = ()=>{ populateFormForEdit(r); };
-        delBtn.onclick = async ()=>{
-          if(!confirm('Delete this review?')) return;
-          try{ await deleteDoc(doc(db, 'reviews', r.id)); }catch(e){alert('Delete failed: '+e.message)}
-        };
-
-        actions.appendChild(editBtn); actions.appendChild(delBtn);
-
-        const bar = document.createElement('div'); bar.style.height='6px'; bar.style.borderRadius='4px'; bar.style.background='rgba(255,255,255,0.08)'; bar.style.marginTop='4px';
-        const fill = document.createElement('div'); fill.style.height='100%'; fill.style.width=`${(r.rating||0)*10}%`; fill.style.borderRadius='4px'; fill.style.background='var(--accent)'; bar.appendChild(fill);
-        body.appendChild(title); body.appendChild(meta); body.appendChild(bar); body.appendChild(notes);
-        item.appendChild(body); item.appendChild(actions);
-        listEl.appendChild(item);
+      if (imageFile && imageFile.size > 0) {
+        imagePath = `images/${user.uid}/${Date.now()}_${imageFile.name}`;
+        const storageRef = ref(storage, imagePath);
+        await uploadBytes(storageRef, imageFile);
+        imageUrl = await getDownloadURL(storageRef);
       }
-    }
 
-    function populateFormForEdit(r){
-      reviewIdInput.value = r.id;
-      distilleryInput.value = r.distillery || '';
-      bottleInput.value = r.bottle || '';
-      proofInput.value = r.proof || '';
-      dateInput.value = r.date ? new Date(r.date).toISOString().slice(0,10) : '';
-      ratingInput.value = r.rating || 3;
-      notesInput.value = r.notes || '';
-      window.scrollTo({top:0,behavior:'smooth'});
-    }
+      await addDoc(reviewsCol, {
+        userId: user.uid,
+        name: formData.get('name'),
+        distillery: formData.get('distillery'),
+        rating: parseFloat(formData.get('rating')),
+        notes: formData.get('notes'),
+        imageUrl,
+        imagePath,
+        createdAt: serverTimestamp(),
+      });
 
-    reviewForm.addEventListener('submit', async (e)=>{
-      e.preventDefault();
-      const data = {
-        distillery: distilleryInput.value.trim(),
-        bottle: bottleInput.value.trim(),
-        proof: proofInput.value ? Number(proofInput.value) : null,
-        date: dateInput.value || null,
-        rating: Number(ratingInput.value),
-        notes: notesInput.value.trim(),
-        updatedAt: serverTimestamp()
-      };
-      const id = reviewIdInput.value;
-      try{
-        if(id){
-          await updateDoc(doc(db, 'reviews', id), data);
-        } else {
-          await addDoc(reviewsCol, {...data, createdAt: serverTimestamp()});
-        }
-        reviewForm.reset(); reviewIdInput.value='';
-      }catch(err){
-        console.error(err); alert('Save failed: '+err.message);
-      }
+      reviewForm.reset();
     });
 
-    clearBtn.addEventListener('click', ()=>{ reviewForm.reset(); reviewIdInput.value=''; });
-    searchInput.addEventListener('input', ()=>renderList());
-    sortSelect.addEventListener('change', ()=>renderList());
+    // ---------- Render Reviews (Anyone Can View) ----------
+    onSnapshot(reviewsCol, (snapshot) => {
+      reviewsList.innerHTML = '';
+      snapshot.forEach(docSnap => {
+        const data = docSnap.data();
+        const item = document.createElement('div');
+        item.classList.add('review-item');
 
-    // Helpful: fetch existing docs once on load (optional)
-    async function initOnce(){
-      try{ statusEl.textContent='Loading...';
-        const snaps = await getDocs(q);
-        // onSnapshot will update after this anyway
-      }catch(e){ console.warn(e); }
+        item.innerHTML = `
+          <h3>${data.name}</h3>
+          <p><strong>Distillery:</strong> ${data.distillery}</p>
+          <p><strong>Rating:</strong> ${data.rating}</p>
+          <p>${data.notes}</p>
+          ${data.imageUrl ? `<img src="${data.imageUrl}" class="thumb" />` : '<div class="placeholder">No Image</div>'}
+        `;
+
+        reviewsList.appendChild(item);
+      });
+    });
+
+  </script>
+  <!-- Authentication UI -->
+  <div id="auth-section" style="margin:20px 0;">
+    <button id="signInBtn">Sign In with Google</button>
+    <button id="signOutBtn" style="display:none;">Sign Out</button>
+    <span id="userDisplay" style="margin-left:10px;"></span>
+  </div>
+
+  <script type="module">
+    import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/9.22.2/firebase-auth.js";
+
+    const auth = getAuth(app);
+    const provider = new GoogleAuthProvider();
+
+    const signInBtn = document.getElementById("signInBtn");
+    const signOutBtn = document.getElementById("signOutBtn");
+    const userDisplay = document.getElementById("userDisplay");
+
+    signInBtn.onclick = () => signInWithPopup(auth, provider);
+    signOutBtn.onclick = () => signOut(auth);
+
+    onAuthStateChanged(auth, (user) => {
+      if (user) {
+        signInBtn.style.display = "none";
+        signOutBtn.style.display = "inline-block";
+        userDisplay.textContent = `Signed in as ${user.displayName}`;
+      } else {
+        signInBtn.style.display = "inline-block";
+        signOutBtn.style.display = "none";
+        userDisplay.textContent = "";
+      }
+    });
+  </script>
+
+  <!-- Firestore & Storage Security Rules (For Firebase Console) -->
+  <!--
+  Firestore Rules:
+  rules_version = '2';
+  service cloud.firestore {
+    match /databases/{database}/documents {
+      match /reviews/{reviewId} {
+        allow read: if request.auth != null;
+        allow create: if request.auth != null;
+        allow update, delete: if request.auth != null && request.auth.uid == resource.data.uid;
+      }
     }
-    initOnce();
-
-    // Clean up when unloading (optional)
-    window.addEventListener('beforeunload', ()=>{ if(typeof unsub === 'function') unsub(); });
-    // --- Image Upload Support ---
-  import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/9.6.11/firebase-storage.js";
-
-  const storage = getStorage(app);
-
-  // Add image input to the form
-  const form = document.getElementById('review-form');
-  if (!document.getElementById('image-input')) {
-    const imgInput = document.createElement('input');
-    imgInput.type = 'file';
-    imgInput.accept = 'image/*';
-    imgInput.id = 'image-input';
-    imgInput.className = 'mt-2';
-    form.appendChild(imgInput);
   }
 
-  // Modify submit handler to upload an image
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-
-    const file = document.getElementById('image-input').files[0];
-    let imageUrl = null;
-
-    if (file) {
-      const filePath = `bourbon_images/${Date.now()}_${file.name}`;
-      const imgRef = storageRef(storage, filePath);
-      const snapshot = await uploadBytes(imgRef, file);
-      imageUrl = await getDownloadURL(snapshot.ref);
+  Storage Rules:
+  rules_version = '2';
+  service firebase.storage {
+    match /b/{bucket}/o {
+      match /images/{userId}/{fileId} {
+        allow read: if request.auth != null;
+        allow write: if request.auth != null && request.auth.uid == userId;
+      }
     }
+  }
+  -->
 
-    // Attach imageUrl to the review object
-    review.imageUrl = imageUrl;
-  });
-// --- Charts (Chart.js) ---
-import "https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js";
-
-function renderChart(){
-  const ctx = document.getElementById('ratingChart');
-  if(!ctx) return;
-  const bins = Array(10).fill(0);
-  for(const r of reviews){ if(r.rating>=1 && r.rating<=10) bins[r.rating-1]++; }
-  if(window.ratingChart) window.ratingChart.destroy();
-  window.ratingChart = new Chart(ctx,{
-    type:'bar',
-    data:{ labels:[1,2,3,4,5,6,7,8,9,10], datasets:[{ label:'Count', data:bins }] },
-    options:{ responsive:true, plugins:{legend:{display:false}}, scales:{y:{beginAtZero:true}} }
-  });
-}
-
-// Re-render chart whenever list updates
-const originalRenderList = renderList;
-renderList = function(){ originalRenderList(); renderChart(); };
-
-</script>
 </body>
 </html>
